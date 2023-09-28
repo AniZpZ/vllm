@@ -342,14 +342,6 @@ class LlamaForCausalLM(nn.Module):
                      cache_dir: Optional[str] = None,
                      load_format: str = "auto",
                      revision: Optional[str] = None):
-        if self.quant_config is not None and self.quant_config.get_name() == "smoothquant":
-            return self._load_int8_weights(
-                model_name_or_path,
-                cache_dir,
-                load_format,
-                revision
-            )
-        
         if self.quant_config is None:
             weight_suffixes = ["weight"]
         else:
@@ -383,118 +375,9 @@ class LlamaForCausalLM(nn.Module):
                 model_name_or_path, cache_dir, load_format, revision):
             if "rotary_emb.inv_freq" in name:
                 continue
-
-            is_packed = False
-            is_transposed = False
-            if self.quant_config is not None:
-                is_packed = self.quant_config.is_packed(name)
-                is_transposed = self.quant_config.is_transposed(name)
-            if is_transposed:
-                loaded_weight = convert_pyslice_to_tensor(loaded_weight)
-                loaded_weight = loaded_weight.T
-
-            is_attention_weight = False
-            for weight_name, shard_size, offset in attention_weight_specs:
-                if weight_name not in name:
-                    continue
-                param = state_dict[name.replace(weight_name, "qkv_proj")]
-                if is_transposed:
-                    param = param.T
-
-                if is_packed:
-                    shard_size //= self.quant_config.pack_factor
-                    offset //= self.quant_config.pack_factor
-
-                loaded_weight = loaded_weight[
-                    shard_size * tensor_model_parallel_rank:shard_size *
-                    (tensor_model_parallel_rank + 1)]
-                param_slice = param.data[offset:offset + shard_size]
-                assert param_slice.shape == loaded_weight.shape
-
-                param_slice.copy_(loaded_weight)
-                is_attention_weight = True
-                break
-            if is_attention_weight:
-                continue
-
-            is_gate_up_weight = False
-            for stride_id, weight_name in enumerate(["gate_proj", "up_proj"]):
-                if weight_name not in name:
-                    continue
-                param = state_dict[name.replace(weight_name, "gate_up_proj")]
-                if is_transposed:
-                    param = param.T
-
-                shard_size = param.shape[0] // 2
-                loaded_weight = loaded_weight[
-                    shard_size * tensor_model_parallel_rank:shard_size *
-                    (tensor_model_parallel_rank + 1)]
-                param_slice = param.data[shard_size * stride_id:shard_size *
-                                         (stride_id + 1)]
-                assert param_slice.shape == loaded_weight.shape
-                param_slice.copy_(loaded_weight)
-                is_gate_up_weight = True
-                break
-            if is_gate_up_weight:
-                continue
-
-            param = state_dict[name]
-            if is_transposed:
-                param = param.T
-
-            if "embed_tokens" in name or "lm_head" in name:
-                load_padded_tensor_parallel_vocab(param, loaded_weight,
-                                                  tensor_model_parallel_rank)
-                continue
-
-            load_tensor_parallel_weights(param, loaded_weight, name,
-                                         column_parallel_weights,
-                                         row_parallel_weights,
-                                         tensor_model_parallel_rank)
-    
-    def _load_int8_weights(self,
-                           model_name_or_path: str,
-                           cache_dir: Optional[str] = None,
-                           load_format: str = "auto",
-                           revision: Optional[str] = None):
-        # TODO: support tp in intlinear
-        tp_size = 1
-        tensor_model_parallel_rank = 0
-        q_proj_shard_size = (self.config.hidden_size // tp_size)
-        kv_proj_shard_size = (self.config.hidden_size //
-                              self.config.num_attention_heads *
-                              self.config.num_key_value_heads // tp_size)
-        
-        if self.quant_config is None:
-            weight_suffixes = ["weight"]
-        else:
-            weight_suffixes = self.quant_config.get_tp_tensor_names()
-
-        column_parallel_weights: List[str] = []
-        for layer in self._column_parallel_layers:
-            for suffix in weight_suffixes:
-                column_parallel_weights.append(f"{layer}.{suffix}")
-        
-        row_parallel_weights: List[str] = []
-        for layer in self._row_parallel_layers:
-            for suffix in weight_suffixes:
-                row_parallel_weights.append(f"{layer}.{suffix}")
-        
-        attention_weight_specs = [
-            # (weight_name, shard_size, offset)
-            ("q_proj", q_proj_shard_size, 0),
-            ("k_proj", kv_proj_shard_size, q_proj_shard_size),
-            ("v_proj", kv_proj_shard_size,
-             q_proj_shard_size + kv_proj_shard_size),
-        ]
-        state_dict = self.state_dict()
-
-        for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision):
-            if "rotary_emb.inv_freq" in name:
-                continue
-            # bias is useless for llama
             if "bias" in name:
+                continue
+            if name.endswith("proj.b"):
                 continue
 
             is_packed = False
@@ -518,7 +401,6 @@ class LlamaForCausalLM(nn.Module):
                     shard_size //= self.quant_config.pack_factor
                     offset //= self.quant_config.pack_factor
                 
-                # share use same scale in quantizatin
                 if "proj.a" in name or "proj.inscale" in name:
                     param.copy_(loaded_weight)
                     is_attention_weight = True
@@ -542,9 +424,8 @@ class LlamaForCausalLM(nn.Module):
                     continue
                 param = state_dict[name.replace(weight_name, "gate_up_proj")]
                 if is_transposed:
-                    loaded_weight = loaded_weight.T
-
-                # share use same scale in quantizatin
+                    param = param.T
+                
                 if "proj.a" in name or "proj.inscale" in name:
                     param.copy_(loaded_weight)
                     is_gate_up_weight = True
@@ -575,4 +456,4 @@ class LlamaForCausalLM(nn.Module):
             load_tensor_parallel_weights(param, loaded_weight, name,
                                          column_parallel_weights,
                                          row_parallel_weights,
-                                         tensor_model_parallel_rank)        
+                                         tensor_model_parallel_rank)
