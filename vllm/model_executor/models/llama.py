@@ -493,6 +493,8 @@ class LlamaForCausalLM(nn.Module):
             # bias is useless for llama
             if "bias" in name:
                 continue
+            if name.endswith(".b"):
+                continue
 
             is_packed = False
             is_transposed = False
@@ -516,7 +518,7 @@ class LlamaForCausalLM(nn.Module):
                     offset //= self.quant_config.pack_factor
                 
                 # share use same scale in quantizatin
-                if "proj.alpha" in name or "proj.inscale" in name:
+                if "proj.a" in name or "proj.inscale" in name or "proj.b" in name:
                     param.copy_(loaded_weight)
                     is_attention_weight = True
                     continue
