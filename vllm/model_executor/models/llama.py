@@ -457,14 +457,6 @@ class LlamaForCausalLM(nn.Module):
                            cache_dir: Optional[str] = None,
                            load_format: str = "auto",
                            revision: Optional[str] = None):
-        # TODO: support tp in intlinear
-        tp_size = 1
-        tensor_model_parallel_rank = 0
-        q_proj_shard_size = (self.config.hidden_size // tp_size)
-        kv_proj_shard_size = (self.config.hidden_size //
-                              self.config.num_attention_heads *
-                              self.config.num_key_value_heads // tp_size)
-        
         if self.quant_config is None:
             weight_suffixes = ["weight"]
         else:
@@ -474,12 +466,17 @@ class LlamaForCausalLM(nn.Module):
         for layer in self._column_parallel_layers:
             for suffix in weight_suffixes:
                 column_parallel_weights.append(f"{layer}.{suffix}")
-        
         row_parallel_weights: List[str] = []
         for layer in self._row_parallel_layers:
             for suffix in weight_suffixes:
                 row_parallel_weights.append(f"{layer}.{suffix}")
-        
+
+        tp_size = get_tensor_model_parallel_world_size()
+        tensor_model_parallel_rank = get_tensor_model_parallel_rank()
+        q_proj_shard_size = (self.config.hidden_size // tp_size)
+        kv_proj_shard_size = (self.config.hidden_size //
+                              self.config.num_attention_heads *
+                              self.config.num_key_value_heads // tp_size)
         attention_weight_specs = [
             # (weight_name, shard_size, offset)
             ("q_proj", q_proj_shard_size, 0),
@@ -519,7 +516,7 @@ class LlamaForCausalLM(nn.Module):
                     offset //= self.quant_config.pack_factor
                 
                 # share use same scale in quantizatin
-                if "proj.a" in name or "proj.inscale" in name:
+                if "proj.alpha" in name or "proj.inscale" in name:
                     param.copy_(loaded_weight)
                     is_attention_weight = True
                     continue
