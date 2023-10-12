@@ -27,6 +27,7 @@ class CompletionOutput:
         token_ids: List[int],
         cumulative_logprob: float,
         logprobs: Optional[SampleLogprobs],
+        probs,
         finish_reason: Optional[str] = None,
         lora_request: Optional[LoRARequest] = None,
     ) -> None:
@@ -35,6 +36,7 @@ class CompletionOutput:
         self.token_ids = token_ids
         self.cumulative_logprob = cumulative_logprob
         self.logprobs = logprobs
+        self.probs = probs
         self.finish_reason = finish_reason
         self.lora_request = lora_request
 
@@ -98,6 +100,7 @@ class RequestOutput:
         outputs: List[CompletionOutput] = []
         for seq in top_n_seqs:
             logprobs = seq.output_logprobs
+            probs = seq.probs
             if seq_group.sampling_params.logprobs is None:
                 # NOTE: We need to take care of this case because the sequence
                 # always has the logprobs of the sampled tokens even if the
@@ -106,7 +109,7 @@ class RequestOutput:
             finshed_reason = SequenceStatus.get_finished_reason(seq.status)
             output = CompletionOutput(seqs.index(seq), seq.output_text,
                                       seq.get_output_token_ids(),
-                                      seq.get_cumulative_logprob(), logprobs,
+                                      seq.get_cumulative_logprob(), logprobs, probs,
                                       finshed_reason)
             outputs.append(output)
 
