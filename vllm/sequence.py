@@ -126,6 +126,7 @@ class Sequence:
         self.read_offset = 0
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
+        self.probs = None
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -154,11 +155,13 @@ class Sequence:
         self,
         token_id: int,
         logprobs: Dict[int, float],
+        probs
     ) -> None:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
         self.data.append_token_id(token_id, logprobs[token_id])
+        self.probs = probs
 
     def get_len(self) -> int:
         return self.data.get_len()
@@ -349,10 +352,12 @@ class SequenceOutputs:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, float],
+        probs
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
+        self.probs = probs
 
     def __repr__(self) -> str:
         return (f"SequenceOutputs(parent_seq_id={self.parent_seq_id}, "

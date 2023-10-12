@@ -391,7 +391,7 @@ def _sample(
                 output_logprobs[next_token_id] = logprob[next_token_id].item()
                 seq_group_outputs.append(
                     SequenceOutputs(parent_seq_id, next_token_id,
-                                    output_logprobs))
+                                    output_logprobs, prob))
         else:
             # Generate the next tokens for generation tokens.
             num_parent_seqs = len(seq_ids)
