@@ -121,7 +121,7 @@ def evalute(
         acc = np.mean(pred_paritition == labels_partition)
         accs.append(acc)
     sub2acc = {sub: acc for sub, acc in zip(subjects, accs)}
-    mmlu_category_path = "benchmarks/mmlu_category.json"
+    mmlu_category_path = "mmlu_category.json"
     with open(mmlu_category_path, 'r', encoding='utf-8') as f:
         sub_category = json.load(f)
     cat_avg_acc = {}
@@ -138,33 +138,11 @@ def evalute(
 
 
 def main(args: argparse.Namespace):
-    # subjects = [
-    #     "abstract_algebra",
-    #     "anatomy",
-    #     "astronomy",
-    #     "college_biology",
-    #     "college_chemistry",
-    #     "college_computer_science",
-    #     "college_mathematics",
-    #     "college_physics",
-    #     "computer_security",
-    #     "conceptual_physics",
-    #     "electrical_engineering",
-    #     "elementary_mathematics",
-    #     "high_school_biology",
-    #     "high_school_chemistry",
-    #     "high_school_computer_science",
-    #     "high_school_mathematics",
-    #     "high_school_physics",
-    #     "high_school_statistics",
-    #     "machine_learning"
-    # ]
-    mmlu_category_path = "benchmarks/mmlu_category.json"
-    with open(mmlu_category_path, 'r', encoding='utf-8') as f:
-        sub_category = json.load(f)
+    # mmlu_category_path = "mmlu_category.json"
+    # with open(mmlu_category_path, 'r', encoding='utf-8') as f:
+    #     sub_category = json.load(f)
     # subjects = sub_category["Social Sciences"]
-    subjects = sub_category["Social Sciences"]
-    # subjects = sorted([f.split("_test.csv")[0] for f in os.listdir(args.test_data_path) if "_test.csv" in f])
+    subjects = sorted([f.split("_test.csv")[0] for f in os.listdir(args.test_data_path) if "_test.csv" in f])
     dataset, labels, nums_questions = sample_requests(
         args.dev_data_path,
         args.test_data_path,
@@ -225,7 +203,7 @@ if __name__ == "__main__":
                         type=int,
                         default=100,
                         help="nums of max token for evaluation outputs")
-    parser.add_argument("--origin", type=bool, default=True)
+    parser.add_argument("--origin", action='store_true', default=True)
     parser.add_argument("--kv-cache-dtype",
                         type=str,
                         default="float16")
