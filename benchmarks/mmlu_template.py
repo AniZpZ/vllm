@@ -77,7 +77,8 @@ class MMLUTemplate():
         return prompt
 
     #########few_shot模板不带分析######################
-    def getFewShotBaseTemplates_origin(self, k=5):
+    # when prompt is longer than the limit, use smaller k (e.g., k=2)
+    def getFewShotBaseTemplates_origin(self, k=2):
         dev_df = pd.read_csv(self.file_path, header=None)
 
         self.fewShotTemplate = self.gen_prompt_origin(dev_df,self.subject, k)

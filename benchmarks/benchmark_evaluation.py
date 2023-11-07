@@ -138,32 +138,10 @@ def evalute(
 
 
 def main(args: argparse.Namespace):
-    # subjects = [
-    #     "abstract_algebra",
-    #     "anatomy",
-    #     "astronomy",
-    #     "college_biology",
-    #     "college_chemistry",
-    #     "college_computer_science",
-    #     "college_mathematics",
-    #     "college_physics",
-    #     "computer_security",
-    #     "conceptual_physics",
-    #     "electrical_engineering",
-    #     "elementary_mathematics",
-    #     "high_school_biology",
-    #     "high_school_chemistry",
-    #     "high_school_computer_science",
-    #     "high_school_mathematics",
-    #     "high_school_physics",
-    #     "high_school_statistics",
-    #     "machine_learning"
-    # ]
     mmlu_category_path = "benchmarks/mmlu_category.json"
     with open(mmlu_category_path, 'r', encoding='utf-8') as f:
         sub_category = json.load(f)
-    # subjects = sub_category["Social Sciences"]
-    subjects = sub_category["Social Sciences"]
+    subjects = sub_category["Humanities"]
     # subjects = sorted([f.split("_test.csv")[0] for f in os.listdir(args.test_data_path) if "_test.csv" in f])
     dataset, labels, nums_questions = sample_requests(
         args.dev_data_path,
