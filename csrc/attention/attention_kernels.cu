@@ -657,24 +657,24 @@ void paged_attention_v1_launcher(
     // NOTE(woosuk): To reduce the compilation time, we only compile for the
     // head sizes that we use in the model. However, we can easily extend this
     // to support any head size which is a multiple of 16.
-    // case 64:
-    //   LAUNCH_PAGED_ATTENTION_V1(64);
-    //   break;
-    // case 80:
-    //   LAUNCH_PAGED_ATTENTION_V1(80);
-    //   break;
-    // case 96:
-    //   LAUNCH_PAGED_ATTENTION_V1(96);
-    //   break;
-    // case 112:
-    //   LAUNCH_PAGED_ATTENTION_V1(112);
-    //   break;
+    case 64:
+      LAUNCH_PAGED_ATTENTION_V1(64);
+      break;
+    case 80:
+      LAUNCH_PAGED_ATTENTION_V1(80);
+      break;
+    case 96:
+      LAUNCH_PAGED_ATTENTION_V1(96);
+      break;
+    case 112:
+      LAUNCH_PAGED_ATTENTION_V1(112);
+      break;
     case 128:
       LAUNCH_PAGED_ATTENTION_V1(128);
       break;
-    // case 256:
-    //   LAUNCH_PAGED_ATTENTION_V1(256);
-    //   break;
+    case 256:
+      LAUNCH_PAGED_ATTENTION_V1(256);
+      break;
     default:
       TORCH_CHECK(false, "Unsupported head size: ", head_size);
       break;
@@ -730,10 +730,10 @@ void paged_attention_v1(
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
   bool enable_quant = false,
-  const float k_scale = 1.0f,
-  const float k_zp = 0.0f,
-  const float v_scale = 1.0f,
-  const float v_zp = 0.0f) {
+  float k_scale = 1.0f,
+  float k_zp = 0.0f,
+  float v_scale = 1.0f,
+  float v_zp = 0.0f) {
   if (enable_quant) {
     if (query.dtype() == at::ScalarType::Float) {
       CALL_V1_LAUNCHER_BLOCK_SIZE(float, int8_t, true);
@@ -858,24 +858,24 @@ void paged_attention_v2_launcher(
     // NOTE(woosuk): To reduce the compilation time, we only compile for the
     // head sizes that we use in the model. However, we can easily extend this
     // to support any head size which is a multiple of 16.
-    // case 64:
-    //   LAUNCH_PAGED_ATTENTION_V2(64);
-    //   break;
-    // case 80:
-    //   LAUNCH_PAGED_ATTENTION_V2(80);
-    //   break;
-    // case 96:
-    //   LAUNCH_PAGED_ATTENTION_V2(96);
-    //   break;
-    // case 112:
-    //   LAUNCH_PAGED_ATTENTION_V2(112);
-    //   break;
+    case 64:
+      LAUNCH_PAGED_ATTENTION_V2(64);
+      break;
+    case 80:
+      LAUNCH_PAGED_ATTENTION_V2(80);
+      break;
+    case 96:
+      LAUNCH_PAGED_ATTENTION_V2(96);
+      break;
+    case 112:
+      LAUNCH_PAGED_ATTENTION_V2(112);
+      break;
     case 128:
       LAUNCH_PAGED_ATTENTION_V2(128);
       break;
-    // case 256:
-    //   LAUNCH_PAGED_ATTENTION_V2(256);
-    //   break;
+    case 256:
+      LAUNCH_PAGED_ATTENTION_V2(256);
+      break;
     default:
       TORCH_CHECK(false, "Unsupported head size: ", head_size);
       break;
@@ -936,10 +936,10 @@ void paged_attention_v2(
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
   bool enable_quant = false,
-  const float k_scale = 1.0f,
-  const float k_zp = 0.0f,
-  const float v_scale = 1.0f,
-  const float v_zp = 0.0f) {
+  float k_scale = 1.0f,
+  float k_zp = 0.0f,
+  float v_scale = 1.0f,
+  float v_zp = 0.0f) {
   if (enable_quant) {
     if (query.dtype() == at::ScalarType::Float) {
       CALL_V2_LAUNCHER_BLOCK_SIZE(float, int8_t, true);

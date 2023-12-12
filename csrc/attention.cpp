@@ -14,10 +14,10 @@ void paged_attention_v1(
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
   bool enable_quant = false,
-  const float k_scale = 1.0f,
-  const float k_zp = 0.0f,
-  const float v_scale = 1.0f,
-  const float v_zp = 0.0f);
+  float k_scale = 1.0f,
+  float k_zp = 0.0f,
+  float v_scale = 1.0f,
+  float v_zp = 0.0f);
 
 void paged_attention_v2(
   torch::Tensor& out,             // [num_seqs, num_heads, head_size]
@@ -34,11 +34,11 @@ void paged_attention_v2(
   int block_size,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
-   bool enable_quant = false,
-  const float k_scale = 1.0f,
-  const float k_zp = 0.0f,
-  const float v_scale = 1.0f,
-  const float v_zp = 0.0f);
+  bool enable_quant = false,
+  float k_scale = 1.0f,
+  float k_zp = 0.0f,
+  float v_scale = 1.0f,
+  float v_zp = 0.0f);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def(
