@@ -177,7 +177,8 @@ class LlamaAttention(nn.Module):
                 rotary_dim=self.head_dim,
                 num_kv_heads=self.num_kv_heads,
                 rope_scaling=rope_scaling,
-                )
+                quant_kv_cache=quant_kv_cache,
+                kv_quant_params=kv_quant_params)
 
     def forward(
         self,
