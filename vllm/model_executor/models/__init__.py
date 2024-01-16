@@ -58,6 +58,12 @@ _SUPPORTED_KV_QUANT_MODELS = {
     "LLaMAForCausalLM": ("llama", "LlamaForCausalLM"),
 }
 
+# Models supported by smoothquant
+_SUPPORTED_SMOOTHQUANT_MODELS = {
+    "LlamaForCausalLM": ("llama", "LlamaForCausalLM"),
+    # For decapoda-research/llama-*
+    "LLaMAForCausalLM": ("llama", "LlamaForCausalLM"),
+}
 
 class ModelRegistry:
 
@@ -87,6 +93,10 @@ class ModelRegistry:
     @staticmethod
     def get_supported_kv_quant_archs() -> List[str]:
         return list(_SUPPORTED_KV_QUANT_MODELS.keys())
+    
+    @staticmethod
+    def get_supported_smoothquant_archs() -> List[str]:
+        return list(_SUPPORTED_SMOOTHQUANT_MODELS.keys())
 
 
 __all__ = [

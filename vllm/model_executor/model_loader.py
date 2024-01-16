@@ -36,6 +36,11 @@ def _is_support_kv_quant(config: PretrainedConfig) -> bool:
     supported_archs = ModelRegistry.get_supported_kv_quant_archs()
     return any(arch in supported_archs for arch in architectures)
 
+def _is_support_smoothquant(config: PretrainedConfig) -> bool:
+    architectures = getattr(config, "architectures", [])
+    supported_archs = ModelRegistry.get_supported_smoothquant_archs()
+    return any(arch in supported_archs for arch in architectures)
+
 def get_model(model_config: ModelConfig, parallel_config: ParallelConfig) -> nn.Module:
     model_class = _get_model_architecture(model_config.hf_config)
 
@@ -77,10 +82,13 @@ def get_model(model_config: ModelConfig, parallel_config: ParallelConfig) -> nn.
                 kv_quant_params = list(np.fromfile(path, dtype=np.float32))
                 kv_quant_params_list.append(kv_quant_params)
         with torch.device("cuda"):
-            if _is_support_kv_quant(model_config.hf_config):
-                model = model_class(model_config.hf_config, linear_method, quant_config,
-                                    model_config.quant_kv_cache,
-                                    kv_quant_params_list)
+            if _is_support_smoothquant(model_config.hf_config):
+                if _is_support_kv_quant(model_config.hf_config):
+                    model = model_class(model_config.hf_config, linear_method, quant_config,
+                                        model_config.quant_kv_cache,
+                                        kv_quant_params_list)
+                else:
+                    model = model_class(model_config.hf_config, linear_method, quant_config)
             else:
                 model = model_class(model_config.hf_config, linear_method)
         if model_config.load_format == "dummy":
