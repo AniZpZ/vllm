@@ -12,6 +12,7 @@ from vllm.model_executor.models import ModelRegistry
 from vllm.model_executor.weight_utils import (get_quant_config,
                                               initialize_dummy_weights)
 
+
 @contextlib.contextmanager
 def _set_default_torch_dtype(dtype: torch.dtype):
     """Sets the default torch dtype to the given dtype."""
@@ -31,17 +32,21 @@ def _get_model_architecture(config: PretrainedConfig) -> Type[nn.Module]:
         f"Model architectures {architectures} are not supported for now. "
         f"Supported architectures: {ModelRegistry.get_supported_archs()}")
 
+
 def _is_support_kv_quant(config: PretrainedConfig) -> bool:
     architectures = getattr(config, "architectures", [])
     supported_archs = ModelRegistry.get_supported_kv_quant_archs()
     return any(arch in supported_archs for arch in architectures)
+
 
 def _is_support_smoothquant(config: PretrainedConfig) -> bool:
     architectures = getattr(config, "architectures", [])
     supported_archs = ModelRegistry.get_supported_smoothquant_archs()
     return any(arch in supported_archs for arch in architectures)
 
-def get_model(model_config: ModelConfig, parallel_config: ParallelConfig) -> nn.Module:
+
+def get_model(model_config: ModelConfig,
+              parallel_config: ParallelConfig) -> nn.Module:
     model_class = _get_model_architecture(model_config.hf_config)
 
     # Get the (maybe quantized) linear method.
@@ -84,11 +89,13 @@ def get_model(model_config: ModelConfig, parallel_config: ParallelConfig) -> nn.
         with torch.device("cuda"):
             if _is_support_smoothquant(model_config.hf_config):
                 if _is_support_kv_quant(model_config.hf_config):
-                    model = model_class(model_config.hf_config, linear_method, quant_config,
+                    model = model_class(model_config.hf_config, linear_method,
+                                        quant_config,
                                         model_config.quant_kv_cache,
                                         kv_quant_params_list)
                 else:
-                    model = model_class(model_config.hf_config, linear_method, quant_config)
+                    model = model_class(model_config.hf_config, linear_method,
+                                        quant_config)
             else:
                 model = model_class(model_config.hf_config, linear_method)
         if model_config.load_format == "dummy":

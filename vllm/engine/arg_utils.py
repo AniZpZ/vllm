@@ -191,17 +191,18 @@ class EngineArgs:
                             action='store_true',
                             help='disable logging statistics')
         # Quantization settings.
-        parser.add_argument('--quantization',
-                            '-q',
-                            type=str,
-                            choices=['awq', 'gptq', 'squeezellm', 'smoothquant', None],
-                            default=None,
-                            help='Method used to quantize the weights. If '
-                            'None, we first check the `quantization_config` '
-                            'attribute in the model config file. If that is '
-                            'None, we assume the model weights are not '
-                            'quantized and use `dtype` to determine the data '
-                            'type of the weights.')
+        parser.add_argument(
+            '--quantization',
+            '-q',
+            type=str,
+            choices=['awq', 'gptq', 'squeezellm', 'smoothquant', None],
+            default=None,
+            help='Method used to quantize the weights. If '
+            'None, we first check the `quantization_config` '
+            'attribute in the model config file. If that is '
+            'None, we assume the model weights are not '
+            'quantized and use `dtype` to determine the data '
+            'type of the weights.')
         parser.add_argument('--enforce-eager',
                             action='store_true',
                             help='Always use eager-mode PyTorch. If False, '
@@ -226,15 +227,13 @@ class EngineArgs:
     def create_engine_configs(
         self,
     ) -> Tuple[ModelConfig, CacheConfig, ParallelConfig, SchedulerConfig]:
-        model_config = ModelConfig(self.model, self.tokenizer,
-                                   self.tokenizer_mode, self.trust_remote_code,
-                                   self.download_dir, self.load_format,
-                                   self.dtype, self.seed, self.revision,
-                                   self.tokenizer_revision, self.max_model_len,
-                                   self.quantization, self.kv_cache_dtype, 
-                                   self.kv_quant_params_path,
-                                   self.enforce_eager,
-                                   self.max_context_len_to_capture)
+        model_config = ModelConfig(
+            self.model, self.tokenizer, self.tokenizer_mode,
+            self.trust_remote_code, self.download_dir, self.load_format,
+            self.dtype, self.seed, self.revision, self.tokenizer_revision,
+            self.max_model_len, self.quantization, self.kv_cache_dtype,
+            self.kv_quant_params_path, self.enforce_eager,
+            self.max_context_len_to_capture)
         cache_config = CacheConfig(self.block_size,
                                    self.gpu_memory_utilization,
                                    self.swap_space,

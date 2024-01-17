@@ -65,6 +65,7 @@ _SUPPORTED_SMOOTHQUANT_MODELS = {
     "LLaMAForCausalLM": ("llama", "LlamaForCausalLM"),
 }
 
+
 class ModelRegistry:
 
     @staticmethod
@@ -89,11 +90,11 @@ class ModelRegistry:
     @staticmethod
     def get_supported_archs() -> List[str]:
         return list(_MODELS.keys())
-    
+
     @staticmethod
     def get_supported_kv_quant_archs() -> List[str]:
         return list(_SUPPORTED_KV_QUANT_MODELS.keys())
-    
+
     @staticmethod
     def get_supported_smoothquant_archs() -> List[str]:
         return list(_SUPPORTED_SMOOTHQUANT_MODELS.keys())

@@ -3,7 +3,6 @@ from typing import List, Optional, Union, Tuple
 
 import torch
 import torch.nn as nn
-from torch.nn.parameter import Parameter
 from xformers import ops as xops
 from xformers.ops.fmha.attn_bias import (BlockDiagonalCausalMask,
                                          LowerTriangularMaskWithTensorBias)
@@ -31,17 +30,15 @@ class PagedAttention(nn.Module):
     3. Return the output tensor.
     """
 
-    def __init__(
-        self,
-        num_heads: int,
-        head_size: int,
-        scale: float,
-        num_kv_heads: Optional[int] = None,
-        alibi_slopes: Optional[List[float]] = None,
-        sliding_window: Optional[int] = None,
-        quant_kv_cache: bool = False,
-        kv_quant_params: List[float] = None
-    ) -> None:
+    def __init__(self,
+                 num_heads: int,
+                 head_size: int,
+                 scale: float,
+                 num_kv_heads: Optional[int] = None,
+                 alibi_slopes: Optional[List[float]] = None,
+                 sliding_window: Optional[int] = None,
+                 quant_kv_cache: bool = False,
+                 kv_quant_params: List[float] = None) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.head_size = head_size
@@ -55,7 +52,9 @@ class PagedAttention(nn.Module):
         assert self.num_heads % self.num_kv_heads == 0
         self.num_queries_per_kv = self.num_heads // self.num_kv_heads
         self.quant_kv_cache = quant_kv_cache
-        self.kv_quant_params = kv_quant_params if kv_quant_params is not None else [1.0, 0.0, 1.0, 0.0]
+        self.kv_quant_params = kv_quant_params if kv_quant_params is not None else [
+            1.0, 0.0, 1.0, 0.0
+        ]
 
         if self.head_size not in _SUPPORTED_HEAD_SIZES:
             raise ValueError(f"head_size ({self.head_size}) is not supported. "
@@ -218,17 +217,12 @@ def _make_alibi_bias(
     return attn_bias
 
 
-def _paged_attention(
-    query: torch.Tensor,
-    key_cache: torch.Tensor,
-    value_cache: torch.Tensor,
-    input_metadata: InputMetadata,
-    num_kv_heads: int,
-    scale: float,
-    alibi_slopes: Optional[torch.Tensor],
-    quant_kv_cache: bool,
-    kv_quant_params: List[float]
-) -> torch.Tensor:
+def _paged_attention(query: torch.Tensor, key_cache: torch.Tensor,
+                     value_cache: torch.Tensor, input_metadata: InputMetadata,
+                     num_kv_heads: int, scale: float,
+                     alibi_slopes: Optional[torch.Tensor],
+                     quant_kv_cache: bool,
+                     kv_quant_params: List[float]) -> torch.Tensor:
     output = torch.empty_like(query)
 
     block_size = value_cache.shape[3]
@@ -296,18 +290,17 @@ def _paged_attention(
         )
     return output
 
+
 class DequantPagedAttentionQuant(PagedAttention):
     """MHA/MQA/GQA layer with PagedAttention in SmoothQuant.
     It dequantizes query, key and value, then applies PagedAttention, finally quantize attention output into int8.
     """
-  
+
     # TODO(Zhang Ying): use_per_token_quant
-    def __init__(
-        self,
-        *args,
-        use_per_token_quant: bool = True,
-        **kwargs
-    ) -> None:
+    def __init__(self,
+                 *args,
+                 use_per_token_quant: bool = True,
+                 **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.use_per_token_quant = use_per_token_quant
         self.default_dtype = torch.get_default_dtype()
@@ -379,4 +372,4 @@ class DequantPagedAttentionQuant(PagedAttention):
             return quant_out, scale
         else:
             ops.quant(quant_out, out, quant_scale)
-            return (quant_out,)
+            return (quant_out, )
