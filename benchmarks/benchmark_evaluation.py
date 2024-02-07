@@ -105,13 +105,9 @@ def evalute(
     labels: List[str],
     nums_questions: List[int],
     subjects: List[str],
-    # dataset_template: str = "mmlu",
     options = None
 ) -> Dict[str, float]:
-    # template_class = TEMPLATE_REGITRY[dataset_template]
-    # pred = [template_class.findAnswer(r.outputs[0].text) for r in request_outputs]
     pred = [mmlu_eval(r.outputs[0].probs, options) for r in request_outputs]
-    # pred = [template_class.findAnwerUsingRule(r.outputs[0].text) for r in request_outputs]
     ids = np.cumsum(nums_questions)
     lhs = 0
     accs: List[float] = []
@@ -141,8 +137,7 @@ def main(args: argparse.Namespace):
     mmlu_category_path = "benchmarks/mmlu_category.json"
     with open(mmlu_category_path, 'r', encoding='utf-8') as f:
         sub_category = json.load(f)
-    subjects = sub_category["Humanities"]
-    # subjects = sorted([f.split("_test.csv")[0] for f in os.listdir(args.test_data_path) if "_test.csv" in f])
+    subjects = sub_category[args.mmlu_sub_category]
     dataset, labels, nums_questions = sample_requests(
         args.dev_data_path,
         args.test_data_path,
@@ -179,6 +174,10 @@ if __name__ == "__main__":
 
     parser.add_argument("--model", type=str, default="facebook/opt-125m")
     parser.add_argument("--tokenizer", type=str, default=None)
+    parser.add_argument("--mmlu-sub-category",
+                        type=str,
+                        default="Humanities",
+                        help="which mmlu sub category to evaluate, optional: STEM, Humanities, Social Sciences, Other")
     parser.add_argument("--tensor-parallel-size", "-tp", type=int, default=1)
     parser.add_argument("--n",
                         type=int,
