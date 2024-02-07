@@ -33,7 +33,6 @@ class CacheEngine:
 
         self.head_size = model_config.get_head_size()
         self.num_layers = model_config.get_num_layers(parallel_config)
-
         self.num_heads = model_config.get_num_kv_heads(parallel_config)
 
         self.block_size = cache_config.block_size
@@ -105,11 +104,13 @@ class CacheEngine:
                 size=(self.num_cpu_blocks, *key_block_shape),
                 dtype=self.dtype,
                 pin_memory=pin_memory,
+                device="cpu",
             )
             value_blocks = torch.empty(
                 size=(self.num_cpu_blocks, *value_block_shape),
                 dtype=self.dtype,
                 pin_memory=pin_memory,
+                device="cpu",
             )
             cpu_cache.append((key_blocks, value_blocks))
         return cpu_cache

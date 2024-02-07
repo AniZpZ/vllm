@@ -25,18 +25,20 @@ def main(
     dtype: torch.dtype,
     seed: int,
     do_profile: bool,
+    device: str = "cuda",
     kv_cache_dtype: Optional[str] = None,
 ) -> None:
     random.seed(seed)
     torch.random.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
 
     scale = float(1.0 / (head_size**0.5))
     query = torch.empty(num_seqs,
                         num_query_heads,
                         head_size,
                         dtype=dtype,
-                        device="cuda")
+                        device=device)
     query.uniform_(-scale, scale)
 
     assert num_query_heads % num_kv_heads == 0
@@ -44,11 +46,11 @@ def main(
     if use_alibi:
         alibi_slopes = torch.randn(num_query_heads,
                                    dtype=torch.float,
-                                   device="cuda")
+                                   device=device)
 
     context_lens = [context_len for _ in range(num_seqs)]
     max_context_len = max(context_lens)
-    context_lens = torch.tensor(context_lens, dtype=torch.int, device="cuda")
+    context_lens = torch.tensor(context_lens, dtype=torch.int, device=device)
 
     # Create the block tables.
     max_num_blocks_per_seq = (max_context_len + block_size - 1) // block_size
@@ -59,13 +61,30 @@ def main(
             for _ in range(max_num_blocks_per_seq)
         ]
         block_tables.append(block_table)
-    block_tables = torch.tensor(block_tables, dtype=torch.int, device="cuda")
+    block_tables = torch.tensor(block_tables, dtype=torch.int, device=device)
 
     # Create the KV cache.
-    key_caches, value_caches = create_kv_caches_with_random(
-        NUM_BLOCKS, block_size, 1, num_kv_heads, head_size, kv_cache_dtype,
-        dtype)
+    key_caches, value_caches = create_kv_caches_with_random(NUM_BLOCKS,
+                                                            block_size,
+                                                            1,
+                                                            num_kv_heads,
+                                                            head_size,
+                                                            kv_cache_dtype,
+                                                            dtype,
+                                                            device=device)
     key_cache, value_cache = key_caches[0], value_caches[0]
+
+    # Prepare kv quant parameters for kv_cache_dtype=int8.
+    # NOTE(zhangying): The four parameters only work when kv_cache_dtype is int8.
+    # They have no influence on other kv_cache_dtypes, like auto and fp8_e5m2.
+    # For Llama-13B, we find that the key scale distribution range is [0.05, 0.15],
+    # the value scale distribution range is [0.005, 0.10],
+    # the key zero point distribution range is [-1.5, 1.5],
+    # the value zero point distribution range is [-2.0, 2.0].
+    k_scale = random.random() * 0.10 + 0.05
+    v_scale = random.random() * 0.095 + 0.005
+    k_zp = random.random() * 3.0 - 1.5
+    v_zp = random.random() * 4.0 - 2.0
 
     # Prepare for the paged attention kernel.
     output = torch.empty_like(query)
@@ -84,7 +103,7 @@ def main(
         )
         max_logits = torch.empty_like(exp_sums)
 
-    def run_benchmark(num_iters: int, profile: bool = False) -> float:
+    def run_cuda_benchmark(num_iters: int, profile: bool = False) -> float:
         torch.cuda.synchronize()
         if profile:
             torch.cuda.cudart().cudaProfilerStart()
@@ -105,6 +124,10 @@ def main(
                     max_context_len,
                     alibi_slopes,
                     kv_cache_dtype,
+                    k_scale,
+                    k_zp,
+                    v_scale,
+                    v_zp,
                 )
             elif version == "v2":
                 ops.paged_attention_v2(
@@ -123,6 +146,10 @@ def main(
                     max_context_len,
                     alibi_slopes,
                     kv_cache_dtype,
+                    k_scale,
+                    k_zp,
+                    v_scale,
+                    v_zp,
                 )
             else:
                 raise ValueError(f"Invalid version: {version}")
@@ -135,6 +162,7 @@ def main(
 
     # Warmup.
     print("Warming up...")
+    run_benchmark = run_cuda_benchmark
     run_benchmark(num_iters=3, profile=False)
 
     # Benchmark.
@@ -171,10 +199,11 @@ if __name__ == '__main__':
     parser.add_argument(
         "--kv-cache-dtype",
         type=str,
-        choices=["auto", "fp8_e5m2"],
+        choices=["auto", "fp8_e5m2", "int8"],
         default="auto",
         help=
         'Data type for kv cache storage. If "auto", will use model data type.')
+    parser.add_argument("--device", type=str, choices=["cuda"], default="cuda")
     args = parser.parse_args()
     print(args)
 

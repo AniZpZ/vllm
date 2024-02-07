@@ -309,7 +309,7 @@ class CacheConfig:
                 f"{self.gpu_memory_utilization}.")
 
     def _verify_cache_dtype(self) -> None:
-        if self.cache_dtype == "auto" or self.cache_dtype == "int8":
+        if self.cache_dtype in ["auto", "int8"]:
             pass
         elif self.cache_dtype == "fp8_e5m2":
             nvcc_cuda_version = get_nvcc_cuda_version()
@@ -445,6 +445,12 @@ class SchedulerConfig:
                 f"max_num_batched_tokens ({self.max_num_batched_tokens}) must "
                 "be greater than or equal to max_num_seqs "
                 f"({self.max_num_seqs}).")
+
+
+class DeviceConfig:
+
+    def __init__(self, device: str = "cuda") -> None:
+        self.device = torch.device(device)
 
 
 @dataclass

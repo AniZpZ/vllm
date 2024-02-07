@@ -72,6 +72,7 @@ def run_vllm(
     max_model_len: Optional[int],
     enforce_eager: bool,
     kv_cache_dtype: str,
+    device: str,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -85,6 +86,8 @@ def run_vllm(
         max_model_len=max_model_len,
         enforce_eager=enforce_eager,
         kv_cache_dtype=kv_cache_dtype,
+        kv_quant_params_path=args.kv_quant_params_path,
+        device=device,
     )
 
     # Add the requests to the engine.
@@ -209,7 +212,7 @@ def main(args: argparse.Namespace):
                                 args.seed, args.n, args.use_beam_search,
                                 args.trust_remote_code, args.dtype,
                                 args.max_model_len, args.enforce_eager,
-                                args.kv_cache_dtype)
+                                args.kv_cache_dtype, args.device)
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
@@ -290,10 +293,23 @@ if __name__ == "__main__":
     parser.add_argument(
         "--kv-cache-dtype",
         type=str,
-        choices=["auto", "fp8_e5m2"],
+        choices=["auto", "fp8_e5m2", "int8"],
         default="auto",
         help=
         'Data type for kv cache storage. If "auto", will use model data type.')
+    parser.add_argument(
+        "--kv-quant-params-path",
+        type=str,
+        default=None,
+        help=
+        'Path to scales and zero points of kv cache quantizaiton when kv cache dtype is int8.'
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        choices=["cuda"],
+        help='device type for vLLM execution, supporting CUDA only currently.')
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model

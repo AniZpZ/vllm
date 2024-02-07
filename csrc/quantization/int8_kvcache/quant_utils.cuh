@@ -186,7 +186,7 @@ inline __device__ Float4_ dequant(int32_t a, const float scale, const float zp)
     return b;
 }
 
-// int8x8 ot float32x8
+// int8x8 to float32x8
 inline __device__ Float8_ dequant(int64_t a, const float scale, const float zp)
 {
     union {
@@ -261,25 +261,24 @@ __inline__ __device__ uint4 vec_conversion<uint4, Float8_>(const Float8_& a)
 
 template<>
 __inline__ __device__ __nv_bfloat162 vec_conversion<__nv_bfloat162, float2>(const float2 &a) {
-    return __float22bfloat162_rn(a);
+    __nv_bfloat162 b;
+    from_float(b, a);
+    return b;
 }
 
 template<>
 __inline__ __device__ bf16_4_t vec_conversion<bf16_4_t, Float4_>(const Float4_ &a) {
     bf16_4_t b;
-    b.x = vec_conversion<__nv_bfloat162, float2>(a.x);
-    b.y = vec_conversion<__nv_bfloat162, float2>(a.y);
+    from_float(b, a);
     return b;
 }
 
 template<>
 __inline__ __device__ bf16_8_t vec_conversion<bf16_8_t, Float8_>(const Float8_ &a) {
     bf16_8_t b;
-    b.x = vec_conversion<__nv_bfloat162, float2>(a.x);
-    b.y = vec_conversion<__nv_bfloat162, float2>(a.y);
-    b.z = vec_conversion<__nv_bfloat162, float2>(a.z);
-    b.w = vec_conversion<__nv_bfloat162, float2>(a.w);
+    from_float(b, a);
     return b;
 }
+
 } // namespace int8
 } // namespace vllm
