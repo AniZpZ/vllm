@@ -22,10 +22,10 @@ import json
 import random
 import time
 
-import ammo.torch.quantization as atq
+import modelopt.torch.quantization as atq
 import numpy as np
 import torch
-from ammo.torch.export import export_model_config
+from modelopt.torch.export import export_tensorrt_llm_checkpoint
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -301,16 +301,14 @@ def main(args):
             ])
 
             # export safetensors
-            export_model_config(
+            export_tensorrt_llm_checkpoint(
                 model,
                 model_type,
                 getattr(torch, args.dtype),
                 export_dir=export_path,
                 inference_tensor_parallel=args.tp_size,
-                inference_pipeline_parallel=args.pp_size,
-                # export_tensorrt_llm_config=(not export_npz),
-                export_tensorrt_llm_config=False,
-                export_npz=export_npz)
+                inference_pipeline_parallel=1 #not using pp
+            )
 
             # Workaround for wo quantization
             if args.qformat in ["int8_wo", "int4_wo", "full_prec"]:

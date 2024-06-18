@@ -1,15 +1,13 @@
 ### Quantizer Utilities
-`quantize.py`: NVIDIA Quantization utilities using AMMO, ported from TensorRT-LLM:
+`quantize.py`: NVIDIA Quantization utilities using modelopt, ported from TensorRT-LLM:
 `https://github.com/NVIDIA/TensorRT-LLM/blob/main/examples/quantization/quantize.py`
+nvidia-ammo had been renamed to nvidia-modelopt (https://pypi.nvidia.cn/nvidia-modelopt/) according to:
+`https://github.com/NVIDIA/TensorRT-LLM/issues/1579#issuecomment-2144675505`
 
 ### Prerequisite
 
 #### AMMO (AlgorithMic Model Optimization) Installation: nvidia-ammo 0.7.1 or later
-`pip install --no-cache-dir --extra-index-url https://pypi.nvidia.com nvidia-ammo` 
-
-#### AMMO Download (code and docs)
-`https://developer.nvidia.com/downloads/assets/cuda/files/nvidia-ammo/nvidia_ammo-0.5.0.tar.gz`
-`https://developer.nvidia.com/downloads/assets/cuda/files/nvidia-ammo/nvidia_ammo-0.7.1.tar.gz`
+`pip install --no-cache-dir --extra-index-url https://pypi.nvidia.com nvidia-modelopt` 
 
 ### Usage
 
