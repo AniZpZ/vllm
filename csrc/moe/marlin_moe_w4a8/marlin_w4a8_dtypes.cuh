@@ -21,25 +21,18 @@ namespace MARLIN_W4A8_NAMESPACE_NAME {
 // 8 warps are a good choice since every SM has 4 schedulers and having more
 // than 1 warp per schedule allows some more latency hiding. At the same time,
 // we want relatively few warps to have many registers per warp and small tiles.
-static constexpr int default_threads = 256;
-
-static constexpr int pipe_stages =
-    4;  // 4 pipeline stages fit into shared memory
+const int USER_THREADS = 256; // Note: This is only used with user-provided thread_k/n
+const int pipe_stages = 4; // 4 pipeline stages fit into shared memory
+// const int SHARED_MEM = 96 * 1024; // max shared memory on compute capability 8.6 (< 8.0)
 
 static constexpr int min_thread_n = 64;
 static constexpr int min_thread_k = 64;
-static constexpr int max_thread_n = 256;
 
 static constexpr int tile_size = 16;
 static constexpr int max_par = 16;
 
-// Repack params
-static constexpr int repack_stages = 8;
-
-static constexpr int repack_threads = 256;
-
-static constexpr int tile_k_size = tile_size;
-static constexpr int tile_n_size = tile_k_size * 4;
+static constexpr int pack_factor_4bit =
+    8;  // We have 8 4-bit vals inside a 32 bit
 
 constexpr int ceildiv(int a, int b) {
   return (a + b - 1) / b;
