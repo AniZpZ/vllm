@@ -447,5 +447,5 @@ torch::Tensor moe_w4a8_marlin_gemm(
 #endif
 
 TORCH_LIBRARY_IMPL_EXPAND(TORCH_EXTENSION_NAME, CUDA, m) {
- m.impl("moe_wna16_marlin_gemm", &moe_wna16_marlin_gemm);
+ m.impl("moe_w4a8_marlin_gemm", &moe_w4a8_marlin_gemm);
 }
