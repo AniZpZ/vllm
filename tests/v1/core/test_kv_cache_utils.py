@@ -3481,6 +3481,19 @@ def test_unpadded_page_size_includes_per_token_head_scales():
     assert spec.page_size_bytes == spec.unpadded_page_size_bytes
 
 
+def test_flash_attn_page_size_includes_per_token_head_scales():
+    from vllm.v1.attention.backends.flash_attn import FlashAttentionBackend
+
+    dense = new_kv_cache_spec(dtype=torch.uint8)
+    spec = FlashAttentionBackend.customize_spec(
+        new_kv_cache_spec(
+            dtype=torch.uint8, kv_quant_mode=KVQuantMode.FP8_PER_TOKEN_HEAD
+        )
+    )
+    scales = 2 * spec.block_size * spec.num_kv_heads * 4
+    assert spec.unpadded_page_size_bytes == dense.unpadded_page_size_bytes + scales
+
+
 def test_page_size_padded_wins():
     # An explicit padded page size takes precedence over the unpadded size.
     from vllm.v1.attention.backends.triton_attn import TritonAttentionBackend

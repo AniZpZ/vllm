@@ -4,7 +4,7 @@
 
 import copy
 import functools
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar
 
 import numpy as np
@@ -15,6 +15,7 @@ from vllm.platforms import current_platform
 from vllm.utils.torch_utils import (
     PIN_MEMORY,
     canonicalize_singleton_dim_strides,
+    get_dtype_size,
     is_quantized_kv_cache,
 )
 from vllm.v1.attention.backend import (
@@ -42,6 +43,9 @@ from vllm.v1.attention.ops.dcp import (
     dcp_a2a_lse_reduce,
 )
 from vllm.v1.attention.ops.merge_attn_states import merge_attn_states
+from vllm.v1.attention.ops.triton_reshape_and_cache_flash import (
+    triton_reshape_and_cache_flash_per_token_head_quant,
+)
 from vllm.v1.worker.workspace import current_workspace_manager
 
 if is_flash_attn_varlen_func_available():
@@ -67,7 +71,12 @@ from vllm.v1.attention.backend import (
     AttentionMetadataBuilder,
     CommonAttentionMetadata,
 )
-from vllm.v1.kv_cache_interface import AttentionSpec, KVCacheSpec
+from vllm.v1.kv_cache_interface import (
+    AttentionSpec,
+    KVCacheSpec,
+    KVQuantMode,
+    get_kv_quant_mode,
+)
 from vllm.v1.worker.cp_utils import (
     run_split_fa2_dcp_context_attention,
     should_skip_dcp_context_attention,
@@ -76,6 +85,114 @@ from vllm.v1.worker.cp_utils import (
 )
 
 logger = init_logger(__name__)
+
+# Stable vLLM FlashAttention fwd_v2 ABI values. These intentionally differ
+# from KVQuantMode, which is the framework-wide cache-writer dispatch enum.
+_FA3_KV_SCALE_MODE_NONE = 0
+_FA3_KV_SCALE_MODE_FP8_PER_TOKEN_HEAD = 1
+
+
+def _fa3_per_token_head_abi_available() -> bool:
+    """Whether the loaded FA3 extension publishes both stable v2 ops."""
+    return hasattr(torch.ops._vllm_fa3_C, "fwd_v2") and hasattr(
+        torch.ops._vllm_fa3_C, "get_scheduler_metadata_v2"
+    )
+
+
+def _make_fa3_per_token_head_cache_views(
+    kv_cache: torch.Tensor,
+    *,
+    num_kv_heads: int,
+    block_size: int,
+    head_size: int,
+    fp8_dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Carve FA3 views from ``[payload records][scale pairs]`` head segments.
+
+    Each head owns ``N * ([K_fp8; V_fp8])`` followed by
+    ``N * {K_scale_f32, V_scale_f32}``. The returned scale view is logically
+    ``[block, head, token, 2]`` with the token/pair strides required by fwd_v2.
+    """
+    num_blocks, cache_heads, cache_block_size, content = kv_cache.shape
+    if cache_heads != num_kv_heads or cache_block_size != block_size:
+        raise ValueError(
+            f"Unexpected per-token-head KV cache shape: {tuple(kv_cache.shape)}"
+        )
+
+    dtype_size = kv_cache.element_size()
+    scale_pair_bytes = 2 * get_dtype_size(torch.float32)
+    payload_cell_bytes = 2 * head_size * get_dtype_size(fp8_dtype)
+    expected_content_bytes = payload_cell_bytes + scale_pair_bytes
+    if content * dtype_size != expected_content_bytes:
+        raise ValueError(
+            "FP8 per-token-head KV cache content must contain K/V payload and "
+            f"one {{K,V}} scale pair; expected {expected_content_bytes} bytes, "
+            f"got {content * dtype_size}"
+        )
+
+    if kv_cache.stride(3) != 1:
+        raise ValueError("Per-token-head KV cache content must be contiguous")
+
+    head_segment_bytes = block_size * expected_content_bytes
+    if kv_cache.stride(2) == content:
+        # HND physical order. This also covers LHBNC/BHLNC, where blocks or
+        # layers are interleaved between head segments.
+        head_stride_bytes = kv_cache.stride(1) * dtype_size
+    elif kv_cache.stride(1) == content:
+        # NHD physical order is block compact. Reinterpret the raw page as
+        # head segments so each head's scale pairs remain dense.
+        head_stride_bytes = head_segment_bytes
+    else:
+        raise ValueError(
+            f"Unsupported per-token-head KV cache strides: {tuple(kv_cache.stride())}"
+        )
+
+    block_stride_bytes = kv_cache.stride(0) * dtype_size
+    storage_offset_bytes = kv_cache.storage_offset() * dtype_size
+    scale_offset_bytes = block_size * payload_cell_bytes
+    if (
+        block_stride_bytes % 4 != 0
+        or head_stride_bytes % 4 != 0
+        or (storage_offset_bytes + scale_offset_bytes) % 4 != 0
+    ):
+        raise ValueError("Per-token-head KV cache and scale views must be FP32 aligned")
+
+    raw = kv_cache.untyped_storage()
+    fp8_storage = torch.tensor([], dtype=fp8_dtype, device=kv_cache.device).set_(raw)
+    payload_strides = (
+        block_stride_bytes,
+        payload_cell_bytes,
+        head_stride_bytes,
+        1,
+    )
+    key_cache = torch.as_strided(
+        fp8_storage,
+        size=(num_blocks, block_size, num_kv_heads, head_size),
+        stride=payload_strides,
+        storage_offset=storage_offset_bytes,
+    )
+    value_cache = torch.as_strided(
+        fp8_storage,
+        size=(num_blocks, block_size, num_kv_heads, head_size),
+        stride=payload_strides,
+        storage_offset=storage_offset_bytes + head_size,
+    )
+
+    f32_storage = torch.tensor([], dtype=torch.float32, device=kv_cache.device).set_(
+        raw
+    )
+    kv_scale_cache = torch.as_strided(
+        f32_storage,
+        size=(num_blocks, num_kv_heads, block_size, 2),
+        stride=(
+            block_stride_bytes // 4,
+            head_stride_bytes // 4,
+            2,
+            1,
+        ),
+        storage_offset=(storage_offset_bytes + scale_offset_bytes) // 4,
+    )
+    return key_cache, value_cache, kv_scale_cache
 
 
 class FlashAttentionBackend(AttentionBackend):
@@ -86,8 +203,25 @@ class FlashAttentionBackend(AttentionBackend):
         "bfloat16",
         "fp8",
         "fp8_e4m3",
+        "fp8_per_token_head",
     ]
     head_size_v: int | None = None
+
+    @classmethod
+    def customize_spec(cls, spec: AttentionSpec) -> AttentionSpec:
+        if spec.kv_quant_mode != KVQuantMode.FP8_PER_TOKEN_HEAD:
+            return spec
+        content = (spec.head_size + spec.head_size_v) * get_dtype_size(
+            spec.dtype
+        ) + 2 * get_dtype_size(torch.float32)
+        if spec.state_content_bytes is not None:
+            if spec.state_content_bytes != content:
+                raise ValueError(
+                    "Unexpected FP8 per-token-head state_content_bytes: "
+                    f"expected {content}, got {spec.state_content_bytes}"
+                )
+            return spec
+        return replace(spec, state_content_bytes=content)
 
     @classmethod
     def _get_fa4_hd256_block_size(cls) -> int | None:
@@ -180,6 +314,11 @@ class FlashAttentionBackend(AttentionBackend):
             return True
         if kv_cache_dtype not in cls.supported_kv_cache_dtypes:
             return False
+        if kv_cache_dtype == "fp8_per_token_head":
+            return (
+                get_flash_attn_version(head_size=128, head_size_v=128) == 3
+                and _fa3_per_token_head_abi_available()
+            )
         if is_quantized_kv_cache(kv_cache_dtype):
             return flash_attn_supports_kv_cache_dtype(kv_cache_dtype)
         return True
@@ -213,8 +352,25 @@ class FlashAttentionBackend(AttentionBackend):
     ) -> str | None:
         if has_sink and device_capability < DeviceCapability(9, 0):
             return "sink not supported on compute capability < 9.0"
+        if kv_cache_dtype == "fp8_per_token_head":
+            if head_size != 128:
+                return "FP8 per-token-head KV cache requires head_size=128"
+            if dtype != torch.bfloat16:
+                return "FP8 per-token-head KV cache requires BF16 model output"
+            if device_capability.major != 9:
+                return "FP8 per-token-head KV cache requires SM90"
+            if (
+                get_flash_attn_version(
+                    head_size=head_size,
+                    head_size_v=head_size,
+                    has_sinks=has_sink,
+                )
+                != 3
+            ):
+                return "FP8 per-token-head KV cache requires FlashAttention 3"
         if (
             kv_cache_dtype is not None
+            and kv_cache_dtype != "fp8_per_token_head"
             and is_quantized_kv_cache(kv_cache_dtype)
             and not flash_attn_supports_kv_cache_dtype(
                 kv_cache_dtype,
@@ -402,6 +558,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
             causal=causal,
             window_size=_maybe_symmetrize_window(self.aot_sliding_window, causal),
             num_splits=max_num_splits,
+            kv_scale_mode=self.kv_scale_mode,
         )
 
     def _store_scheduler_metadata(
@@ -440,6 +597,11 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
         self.kv_cache_dtype = kv_cache_spec.dtype
         self.headdim = kv_cache_spec.head_size
         self.block_size = kv_cache_spec.block_size
+        self.kv_scale_mode = (
+            _FA3_KV_SCALE_MODE_FP8_PER_TOKEN_HEAD
+            if kv_cache_spec.kv_quant_mode == KVQuantMode.FP8_PER_TOKEN_HEAD
+            else _FA3_KV_SCALE_MODE_NONE
+        )
 
         self.max_num_splits = 0  # No upper bound on the number of splits.
         self.aot_schedule = get_flash_attn_version() == 3
@@ -599,7 +761,12 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
         if envs.VLLM_BATCH_INVARIANT:
             max_num_splits = 1
 
-        use_cascade = common_prefix_len > 0
+        # Cascade would need the scale sidecar/base on both prefix and suffix
+        # calls. Fall back to the regular paged kernel for mode 1.
+        use_cascade = (
+            common_prefix_len > 0
+            and self.kv_scale_mode != _FA3_KV_SCALE_MODE_FP8_PER_TOKEN_HEAD
+        )
         max_dcp_context_kv_len = 0
         dcp_context_kv_lens = None
         num_decode_reqs = 0
@@ -832,6 +999,7 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
 
 class FlashAttentionImpl(AttentionImpl):
     can_return_lse_for_decode: bool = True
+    requires_fp8_query_for_per_token_head: bool = True
 
     def __init__(
         self,
@@ -861,6 +1029,15 @@ class FlashAttentionImpl(AttentionImpl):
         else:
             self.sliding_window = (sliding_window - 1, 0)
         self.kv_cache_dtype = kv_cache_dtype
+        self._kv_quant_mode = get_kv_quant_mode(kv_cache_dtype)
+        self._is_per_token_head_quant = (
+            self._kv_quant_mode == KVQuantMode.FP8_PER_TOKEN_HEAD
+        )
+        self.fp8_dtype = current_platform.fp8_dtype()
+        self._pth_key_cache: torch.Tensor | None = None
+        self._pth_value_cache: torch.Tensor | None = None
+        self._kv_scale_cache: torch.Tensor | None = None
+        self._v_scale_base: torch.Tensor | None = None
         if logits_soft_cap is None:
             # In flash-attn, setting logits_soft_cap as 0 means no soft cap.
             logits_soft_cap = 0
@@ -898,6 +1075,20 @@ class FlashAttentionImpl(AttentionImpl):
             "Using FlashAttention version %s",
             self.vllm_flash_attn_version,
         )
+        if self._is_per_token_head_quant:
+            if self.vllm_flash_attn_version != 3 or head_size != 128:
+                raise NotImplementedError(
+                    "FP8 per-token-head KV scaling requires FA3 with head size 128"
+                )
+            if not _fa3_per_token_head_abi_available():
+                raise NotImplementedError(
+                    "The loaded FA3 extension does not publish the fwd_v2 and "
+                    "get_scheduler_metadata_v2 per-token-head scale ABI"
+                )
+            if kv_sharing_target_layer_name is not None:
+                raise NotImplementedError(
+                    "FP8 per-token-head KV scaling does not support KV cache sharing"
+                )
         # Cache the batch invariant result for use in forward passes
         self.batch_invariant_enabled = envs.VLLM_BATCH_INVARIANT
 
@@ -929,6 +1120,16 @@ class FlashAttentionImpl(AttentionImpl):
 
         self.supports_quant_query_input = flash_attn_supports_quant_query_input()
 
+        if (
+            self._is_per_token_head_quant
+            and vllm_config is not None
+            and vllm_config.kv_transfer_config is not None
+            and vllm_config.kv_transfer_config.is_kv_transfer_instance
+        ):
+            raise NotImplementedError(
+                "FP8 per-token-head KV scaling does not support KV connectors; "
+                "v_scale_base is not part of the transferred page ABI"
+            )
         dcp_a2a = (
             vllm_config is not None
             and vllm_config.parallel_config.decode_context_parallel_size > 1
@@ -939,10 +1140,46 @@ class FlashAttentionImpl(AttentionImpl):
         self._dcp_dtype: torch.dtype | None = None
         self._dcp_max_num_tokens: int = 0
         if vllm_config is not None and self.dcp_world_size > 1:
+            if self._is_per_token_head_quant:
+                raise NotImplementedError(
+                    "FP8 per-token-head KV scaling does not support DCP"
+                )
             self._dcp_dtype = vllm_config.model_config.dtype
             self._dcp_max_num_tokens = (
                 vllm_config.scheduler_config.max_num_batched_tokens
             )
+
+    def _per_token_head_cache_views(
+        self, kv_cache: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self._kv_scale_cache is None:
+            key_cache, value_cache, kv_scale_cache = (
+                _make_fa3_per_token_head_cache_views(
+                    kv_cache,
+                    num_kv_heads=self.num_kv_heads,
+                    block_size=kv_cache.shape[2],
+                    head_size=self.head_size,
+                    fp8_dtype=self.fp8_dtype,
+                )
+            )
+            self._pth_key_cache = key_cache
+            self._pth_value_cache = value_cache
+            self._kv_scale_cache = kv_scale_cache
+            self._v_scale_base = torch.zeros(
+                self.num_kv_heads,
+                dtype=torch.float32,
+                device=kv_cache.device,
+            )
+        assert self._pth_key_cache is not None
+        assert self._pth_value_cache is not None
+        assert self._kv_scale_cache is not None
+        assert self._v_scale_base is not None
+        return (
+            self._pth_key_cache,
+            self._pth_value_cache,
+            self._kv_scale_cache,
+            self._v_scale_base,
+        )
 
     def forward(
         self,
@@ -1010,30 +1247,45 @@ class FlashAttentionImpl(AttentionImpl):
                 layer,
             )
 
-        # (B, H, N, 2*D) -> ((B, N, H, D), (B, N, H, D))
-        key_cache, value_cache = kv_cache.transpose(1, 2).split(self.head_size, dim=-1)
-        # Fix degenerate strides on size-1 dims (e.g. num_kv_heads=1 with TP).
-        # FA3/4 on H100+ uses TMA, which requires ≥16-byte stride alignment.
-        # See vllm.utils.torch_utils.canonicalize_singleton_dim_strides.
-        fixed_k = canonicalize_singleton_dim_strides(key_cache)
-        fixed_v = canonicalize_singleton_dim_strides(value_cache)
-        if fixed_k is not key_cache or fixed_v is not value_cache:
-            logger.debug(
-                "Canonicalized degenerate KV cache strides (FlashAttention): "
-                "shape=%s, key strides before=%s after=%s, "
-                "value strides before=%s after=%s",
-                key_cache.shape,
-                key_cache.stride(),
-                fixed_k.stride(),
-                value_cache.stride(),
-                fixed_v.stride(),
+        kv_scale_cache = None
+        v_scale_base = None
+        kv_scale_mode = _FA3_KV_SCALE_MODE_NONE
+        if self._is_per_token_head_quant:
+            key_cache, value_cache, kv_scale_cache, v_scale_base = (
+                self._per_token_head_cache_views(kv_cache)
             )
-        key_cache, value_cache = fixed_k, fixed_v
+            kv_scale_mode = _FA3_KV_SCALE_MODE_FP8_PER_TOKEN_HEAD
+        else:
+            # (B, H, N, 2*D) -> ((B, N, H, D), (B, N, H, D))
+            key_cache, value_cache = kv_cache.transpose(1, 2).split(
+                self.head_size, dim=-1
+            )
+            # Fix degenerate strides on size-1 dims (e.g. num_kv_heads=1 with TP).
+            # FA3/4 on H100+ uses TMA, which requires ≥16-byte stride alignment.
+            fixed_k = canonicalize_singleton_dim_strides(key_cache)
+            fixed_v = canonicalize_singleton_dim_strides(value_cache)
+            if fixed_k is not key_cache or fixed_v is not value_cache:
+                logger.debug(
+                    "Canonicalized degenerate KV cache strides (FlashAttention): "
+                    "shape=%s, key strides before=%s after=%s, "
+                    "value strides before=%s after=%s",
+                    key_cache.shape,
+                    key_cache.stride(),
+                    fixed_k.stride(),
+                    value_cache.stride(),
+                    fixed_v.stride(),
+                )
+            key_cache, value_cache = fixed_k, fixed_v
 
-        if is_quantized_kv_cache(self.kv_cache_dtype):
-            # queries are quantized in the attention layer
-            key_cache = key_cache.view(current_platform.fp8_dtype())
-            value_cache = value_cache.view(current_platform.fp8_dtype())
+            if is_quantized_kv_cache(self.kv_cache_dtype):
+                # queries are quantized in the attention layer
+                key_cache = key_cache.view(current_platform.fp8_dtype())
+                value_cache = value_cache.view(current_platform.fp8_dtype())
+
+        if self._is_per_token_head_quant and attn_metadata.use_cascade:
+            raise NotImplementedError(
+                "FP8 per-token-head KV scaling does not support cascade attention"
+            )
 
         if not attn_metadata.use_cascade:
             cu_seqlens_q = attn_metadata.query_start_loc
@@ -1050,8 +1302,12 @@ class FlashAttentionImpl(AttentionImpl):
                 if self.supports_quant_query_input
                 else None
             )
-            k_descale = layer._k_scale.expand(descale_shape)
-            v_descale = layer._v_scale.expand(descale_shape)
+            if self._is_per_token_head_quant:
+                k_descale = None
+                v_descale = None
+            else:
+                k_descale = layer._k_scale.expand(descale_shape)
+                v_descale = layer._v_scale.expand(descale_shape)
 
             if self.dcp_world_size > 1:
                 self._forward_with_dcp(
@@ -1182,6 +1438,9 @@ class FlashAttentionImpl(AttentionImpl):
                     dynamic_causal=dynamic_causal,
                     num_splits=num_splits,
                     s_aux=self.sinks,
+                    kv_scale_cache=kv_scale_cache,
+                    v_scale_base=v_scale_base,
+                    kv_scale_mode=kv_scale_mode,
                     mask_mod=rswa_mask_mod_fn or mm_mask_mod,
                     aux_tensors=rswa_aux or mm_aux,
                 )
@@ -1227,6 +1486,25 @@ class FlashAttentionImpl(AttentionImpl):
         if self.attn_type in (AttentionType.ENCODER_ONLY, AttentionType.ENCODER):
             # For encoder attention,
             # we use direct Q, K, V tensors without caching
+            return
+
+        if self._is_per_token_head_quant:
+            key_cache, value_cache, kv_scale_cache, v_scale_base = (
+                self._per_token_head_cache_views(kv_cache)
+            )
+            k_scale_cache = kv_scale_cache[..., 0].permute(0, 2, 1)
+            v_scale_cache = kv_scale_cache[..., 1].permute(0, 2, 1)
+            triton_reshape_and_cache_flash_per_token_head_quant(
+                key,
+                value,
+                key_cache,
+                value_cache,
+                k_scale_cache,
+                v_scale_cache,
+                slot_mapping,
+                kv_quant_mode=self._kv_quant_mode,
+                v_scale_base=v_scale_base,
+            )
             return
 
         # Scatter write into the KV cache using slot_mapping indices.

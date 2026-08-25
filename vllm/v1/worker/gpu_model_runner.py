@@ -6690,6 +6690,14 @@ class GPUModelRunner(
                     layer.impl._k_scale_cache = None
                 if hasattr(layer.impl, "_v_scale_cache"):
                     layer.impl._v_scale_cache = None
+                if hasattr(layer.impl, "_pth_key_cache"):
+                    layer.impl._pth_key_cache = None
+                if hasattr(layer.impl, "_pth_value_cache"):
+                    layer.impl._pth_value_cache = None
+                if hasattr(layer.impl, "_kv_scale_cache"):
+                    layer.impl._kv_scale_cache = None
+                if hasattr(layer.impl, "_v_scale_base"):
+                    layer.impl._v_scale_base = None
 
         gc.collect()
         torch.accelerator.empty_cache()

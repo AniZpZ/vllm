@@ -532,7 +532,6 @@ def test_non_causal_autoselect_backend():
         "fp8_inc",
         "nvfp4",
         "nvfp4_4over6",
-        "fp8_per_token_head",
         "int8_per_token_head",
     ],
 )
@@ -542,6 +541,102 @@ def test_flash_attn_rejects_unhandled_kv_cache_dtypes(kv_cache_dtype: str):
     from vllm.v1.attention.backends.flash_attn import FlashAttentionBackend
 
     assert not FlashAttentionBackend.supports_kv_cache_dtype(kv_cache_dtype)
+
+
+def test_flash_attn_accepts_fp8_per_token_head_only_on_fa3(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import vllm.v1.attention.backends.flash_attn as flash_attn_mod
+
+    backend = flash_attn_mod.FlashAttentionBackend
+    monkeypatch.setattr(
+        flash_attn_mod, "_fa3_per_token_head_abi_available", lambda: True
+    )
+    monkeypatch.setattr(flash_attn_mod, "get_flash_attn_version", lambda **_: 3)
+    assert backend.supports_kv_cache_dtype("fp8_per_token_head")
+
+    monkeypatch.setattr(flash_attn_mod, "get_flash_attn_version", lambda **_: 4)
+    assert not backend.supports_kv_cache_dtype("fp8_per_token_head")
+
+    monkeypatch.setattr(flash_attn_mod, "get_flash_attn_version", lambda **_: 3)
+    monkeypatch.setattr(
+        flash_attn_mod, "_fa3_per_token_head_abi_available", lambda: False
+    )
+    assert not backend.supports_kv_cache_dtype("fp8_per_token_head")
+
+
+def test_flash_attn_per_token_head_combination_constraints(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import vllm.v1.attention.backends.flash_attn as flash_attn_mod
+    from vllm.platforms.interface import DeviceCapability
+
+    monkeypatch.setattr(flash_attn_mod, "get_flash_attn_version", lambda **_: 3)
+    check = flash_attn_mod.FlashAttentionBackend.supports_combination
+    kwargs = dict(
+        head_size=128,
+        dtype=torch.bfloat16,
+        kv_cache_dtype="fp8_per_token_head",
+        block_size=128,
+        use_mla=False,
+        has_sink=False,
+        use_sparse=False,
+        use_mm_prefix=False,
+        device_capability=DeviceCapability(9, 0),
+    )
+    assert check(**kwargs) is None
+    assert "head_size=128" in check(**(kwargs | {"head_size": 64}))
+    assert "BF16" in check(**(kwargs | {"dtype": torch.float16}))
+    assert "SM90" in check(**(kwargs | {"device_capability": DeviceCapability(10, 0)}))
+
+
+@pytest.mark.parametrize("physical_order", ["hnd", "nhd", "lhb", "bhl"])
+@pytest.mark.parametrize("block_size", [16, 128])
+def test_fa3_per_token_head_cache_views_match_kernel_layout(
+    physical_order: str,
+    block_size: int,
+):
+    from vllm.v1.attention.backends.flash_attn import (
+        _make_fa3_per_token_head_cache_views,
+    )
+
+    num_blocks, num_heads, head_size = 2, 3, 128
+    content = 2 * head_size + 8
+    if physical_order == "hnd":
+        kv_cache = torch.zeros(
+            num_blocks, num_heads, block_size, content, dtype=torch.uint8
+        )
+    elif physical_order == "nhd":
+        kv_cache = torch.zeros(
+            num_blocks, block_size, num_heads, content, dtype=torch.uint8
+        ).permute(0, 2, 1, 3)
+    elif physical_order == "lhb":
+        # Physical [H, L, B, N, C], exposed logically as [B, H, N, C].
+        storage = torch.zeros(
+            num_heads, 2, num_blocks, block_size, content, dtype=torch.uint8
+        )
+        kv_cache = storage[:, 0].permute(1, 0, 2, 3)
+    else:
+        # Physical [B, H, L, N, C], exposed logically as [B, H, N, C].
+        storage = torch.zeros(
+            num_blocks, num_heads, 2, block_size, content, dtype=torch.uint8
+        )
+        kv_cache = storage[:, :, 0]
+
+    key_cache, value_cache, scale_cache = _make_fa3_per_token_head_cache_views(
+        kv_cache,
+        num_kv_heads=num_heads,
+        block_size=block_size,
+        head_size=head_size,
+        fp8_dtype=torch.float8_e4m3fn,
+    )
+
+    assert key_cache.shape == (num_blocks, block_size, num_heads, head_size)
+    assert value_cache.shape == key_cache.shape
+    assert scale_cache.shape == (num_blocks, num_heads, block_size, 2)
+    assert scale_cache.stride(-1) == 1
+    assert scale_cache.stride(-2) == 2
+    assert value_cache.storage_offset() - key_cache.storage_offset() == head_size
 
 
 @pytest.mark.parametrize("kv_cache_dtype", ["fp8", "fp8_e4m3"])

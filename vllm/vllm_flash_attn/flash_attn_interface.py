@@ -47,6 +47,8 @@ except (ImportError, ModuleNotFoundError) as e:
 # isort: on
 
 DEFAULT_FA_VERSION = 2
+KV_SCALE_MODE_NONE = 0
+KV_SCALE_MODE_FP8_PER_TOKEN_HEAD = 1
 
 
 def _is_fa2_supported() -> tuple[bool, str | None]:
@@ -140,11 +142,17 @@ def get_scheduler_metadata(
     num_splits=0,  # Can be tuned for speed
     pack_gqa=None,  # Can be tuned for speed
     sm_margin=0,  # Can be tuned if some SMs are used for communication
+    kv_scale_mode: int = KV_SCALE_MODE_NONE,
 ):
     cache_seqlens = maybe_contiguous(cache_seqlens)
     if headdim_v is None:
         headdim_v = headdim
-    scheduler_metadata = torch.ops._vllm_fa3_C.get_scheduler_metadata(
+    scheduler_op = (
+        torch.ops._vllm_fa3_C.get_scheduler_metadata
+        if kv_scale_mode == KV_SCALE_MODE_NONE
+        else torch.ops._vllm_fa3_C.get_scheduler_metadata_v2
+    )
+    scheduler_args = (
         batch_size,
         max_seqlen_q,
         max_seqlen_k,
@@ -169,6 +177,9 @@ def get_scheduler_metadata(
         pack_gqa,
         sm_margin,
     )
+    if kv_scale_mode != KV_SCALE_MODE_NONE:
+        scheduler_args += (kv_scale_mode,)
+    scheduler_metadata = scheduler_op(*scheduler_args)
 
     return scheduler_metadata
 
@@ -208,6 +219,9 @@ def flash_attn_varlen_func(
     cp_world_size=1,
     cp_rank=0,
     cp_tot_seqused_k=None,
+    kv_scale_cache=None,
+    v_scale_base=None,
+    kv_scale_mode: int = KV_SCALE_MODE_NONE,
     # FA4 only
     mask_mod=None,
     block_sparse_tensors=None,
@@ -297,6 +311,12 @@ def flash_attn_varlen_func(
 
     if fa_version == 2:
         if (
+            kv_scale_mode != KV_SCALE_MODE_NONE
+            or kv_scale_cache is not None
+            or v_scale_base is not None
+        ):
+            raise NotImplementedError("FA2 does not support per-token-head KV scales")
+        if (
             scheduler_metadata is not None
             and q_descale is not None
             and k_descale is not None
@@ -342,11 +362,16 @@ def flash_attn_varlen_func(
         )
     elif fa_version == 3:
         assert alibi_slopes is None, "Alibi is not supported in FA3"
+        if kv_scale_mode not in (
+            KV_SCALE_MODE_NONE,
+            KV_SCALE_MODE_FP8_PER_TOKEN_HEAD,
+        ):
+            raise ValueError(f"Unsupported FA3 kv_scale_mode={kv_scale_mode}")
         if mask_mod is not None:
             raise NotImplementedError("FA3 does not support mask_mod")
         if aux_tensors is not None:
             raise NotImplementedError("FA3 does not support aux_tensors")
-        out, softmax_lse, _, _ = torch.ops._vllm_fa3_C.fwd(
+        fwd_args = (
             q,
             k,
             v,
@@ -385,8 +410,31 @@ def flash_attn_varlen_func(
             cp_rank,
             cp_tot_seqused_k,
         )
+        if kv_scale_mode == KV_SCALE_MODE_NONE:
+            if kv_scale_cache is not None or v_scale_base is not None:
+                raise ValueError(
+                    "kv_scale_cache and v_scale_base require a nonzero kv_scale_mode"
+                )
+            fwd_op = torch.ops._vllm_fa3_C.fwd
+        else:
+            if kv_scale_cache is None or v_scale_base is None:
+                raise ValueError(
+                    "FA3 per-token-head KV scaling requires kv_scale_cache "
+                    "and v_scale_base"
+                )
+            fwd_op = torch.ops._vllm_fa3_C.fwd_v2
+            fwd_args += (kv_scale_cache, v_scale_base, kv_scale_mode)
+        out, softmax_lse, _, _ = fwd_op(*fwd_args)
     elif fa_version == 4:
         assert alibi_slopes is None, "Alibi is not supported in FA4"
+        if (
+            kv_scale_mode != KV_SCALE_MODE_NONE
+            or kv_scale_cache is not None
+            or v_scale_base is not None
+        ):
+            raise NotImplementedError(
+                "FA4 does not support FA3 per-token-head KV scales"
+            )
         if block_sparse_tensors is not None:
             assert block_sparse_tensors.full_block_cnt is not None, (
                 "FA4 block_sparse_tensors must materialize empty full_block_cnt "

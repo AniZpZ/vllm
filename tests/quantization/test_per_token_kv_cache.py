@@ -204,6 +204,11 @@ def test_reshape_and_cache_per_token_head(
     )
     k_scale_cache = torch.ones(num_blocks, block_size, num_heads, dtype=torch.float32)
     v_scale_cache = torch.ones(num_blocks, block_size, num_heads, dtype=torch.float32)
+    v_scale_base = (
+        torch.zeros(num_heads, dtype=torch.float32)
+        if qcfg.kv_quant_mode == KVQuantMode.FP8_PER_TOKEN_HEAD
+        else None
+    )
 
     num_slots = block_size * num_blocks
     slot_mapping = torch.tensor(
@@ -219,6 +224,7 @@ def test_reshape_and_cache_per_token_head(
         v_scale_cache,
         slot_mapping,
         kv_quant_mode=qcfg.kv_quant_mode,
+        v_scale_base=v_scale_base,
     )
 
     # INT4 (RHT + asymmetric), INT8/FP8 have different dequant paths.  Only
@@ -226,6 +232,8 @@ def test_reshape_and_cache_per_token_head(
     if not is_int4:
         ref_k_quant, ref_k_scales = _quantize_per_token_head_ref(key, qcfg)
         ref_v_quant, ref_v_scales = _quantize_per_token_head_ref(value, qcfg)
+        if v_scale_base is not None:
+            torch.testing.assert_close(v_scale_base, ref_v_scales.amax(dim=0))
 
     for i, slot in enumerate(slot_mapping.tolist()):
         blk = slot // block_size

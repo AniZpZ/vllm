@@ -99,6 +99,30 @@ class BaseKVCacheMethod(QuantizeMethodBase):
         # Per-token-head quantized KV cache: scales are computed dynamically
         # per (token, head) in the kernel at cache-write time.
         if kv_cache_uses_per_token_head_scales(layer.kv_cache_dtype):
+            if layer.kv_cache_dtype == "fp8_per_token_head":
+                q_scale = layer.q_scale
+                if not (
+                    isinstance(q_scale, float)
+                    or isinstance(q_scale, torch.Tensor)
+                    and q_scale.numel() == 1
+                    and q_scale.is_floating_point()
+                ):
+                    raise ValueError(
+                        "Only per-tensor Q scaling is supported with "
+                        "FP8 per-token-head KV cache quantization"
+                    )
+                q_scale_is_valid = (
+                    q_scale.item() > 0.0
+                    if isinstance(q_scale, torch.Tensor)
+                    else q_scale > 0.0
+                )
+                q_scale = q_scale if q_scale_is_valid else 1.0
+                if current_platform.is_fp8_fnuz():
+                    q_scale *= 2
+                layer._q_scale.copy_(q_scale)
+                layer._q_scale_float = (
+                    q_scale.item() if isinstance(q_scale, torch.Tensor) else q_scale
+                )
             layer._k_scale.copy_(1.0)
             layer._v_scale.copy_(1.0)
             layer._k_scale_float = 1.0

@@ -159,6 +159,7 @@ def _reshape_cache_per_token_head(
     value_cache_ptr,  # [num_blocks, block_size, num_kv_heads, head_size_v]
     k_scale_cache_ptr,  # [num_blocks, block_size, num_kv_heads] float32
     v_scale_cache_ptr,  # [num_blocks, block_size, num_kv_heads] float32
+    v_scale_base_ptr,  # [num_kv_heads] float32, optional monotonic max
     slot_mapping_ptr,  # [num_tokens]
     stride_key_tok: tl.int64,
     stride_key_head: tl.int64,
@@ -183,6 +184,7 @@ def _reshape_cache_per_token_head(
     QUANT_MAX: tl.constexpr = 127.0,
     QUANT_MIN: tl.constexpr = -128.0,
     IS_INT_QUANT: tl.constexpr = False,
+    UPDATE_V_SCALE_BASE: tl.constexpr = False,
 ):
     tok = tl.program_id(0)
     head = tl.program_id(1)
@@ -244,6 +246,8 @@ def _reshape_cache_per_token_head(
         + head * stride_vs_head,
         v_scale,
     )
+    if UPDATE_V_SCALE_BASE:
+        tl.atomic_max(v_scale_base_ptr + head, v_scale)
 
     v_q = v_h * (1.0 / v_scale)
     if IS_INT_QUANT:
@@ -278,18 +282,22 @@ def triton_reshape_and_cache_flash_per_token_head_quant(
     v_scale_cache: torch.Tensor,  # [num_blocks, block_size, num_kv_heads] float32
     slot_mapping: torch.Tensor,  # [num_tokens]
     kv_quant_mode: KVQuantMode,
+    v_scale_base: torch.Tensor | None = None,
 ):
     """Quantize key/value per (token, head) and write to paged cache.
 
     Computes one scale = absmax / QUANT_MAX per (token, head), stores
     quantized data in key_cache/value_cache, and stores the float32
-    scale in k_scale_cache/v_scale_cache.
+    scale in k_scale_cache/v_scale_cache. If ``v_scale_base`` is provided, the
+    writer monotonically updates its per-head maximum in the same kernel.
 
     INT4 needs sub-byte packing + a Hadamard rotation, so it is handled by
     its own kernel; INT8 / FP8 share this kernel, with the quantization
     range (QUANT_MAX, QUANT_MIN) derived from the cache tensor dtype.
     """
     if kv_quant_mode == KVQuantMode.INT4_PER_TOKEN_HEAD:
+        if v_scale_base is not None:
+            raise ValueError("v_scale_base is only supported for FP8 KV cache")
         from vllm.v1.attention.ops.int4_per_token_head import (
             reshape_and_cache_int4,
         )
@@ -320,6 +328,17 @@ def triton_reshape_and_cache_flash_per_token_head_quant(
 
     block_size = key_cache.shape[1]
 
+    if v_scale_base is not None:
+        if v_scale_base.dtype != torch.float32:
+            raise ValueError("v_scale_base must use torch.float32")
+        if v_scale_base.shape != (num_kv_heads,):
+            raise ValueError(
+                "v_scale_base must have shape "
+                f"({num_kv_heads},), got {tuple(v_scale_base.shape)}"
+            )
+        if v_scale_base.device != v_scale_cache.device:
+            raise ValueError("v_scale_base must be on the KV cache device")
+
     if current_platform.is_rocm() or current_platform.is_xpu():
         num_warps = 4
     else:
@@ -332,6 +351,7 @@ def triton_reshape_and_cache_flash_per_token_head_quant(
         value_cache_ptr=value_cache,
         k_scale_cache_ptr=k_scale_cache,
         v_scale_cache_ptr=v_scale_cache,
+        v_scale_base_ptr=(v_scale_base if v_scale_base is not None else v_scale_cache),
         slot_mapping_ptr=slot_mapping,
         stride_key_tok=key.stride(0),
         stride_key_head=key.stride(1),
@@ -356,6 +376,7 @@ def triton_reshape_and_cache_flash_per_token_head_quant(
         QUANT_MAX=quant_max,
         QUANT_MIN=quant_min,
         IS_INT_QUANT=cache_dtype == torch.int8,
+        UPDATE_V_SCALE_BASE=v_scale_base is not None,
         num_warps=num_warps,
     )
 
